@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PRESETS, SOUND_LIBRARY, TONICS, stepTime } from '../src/audio/presets.js';
+import { PRESETS, TONICS, stepTime } from '../src/audio/presets.js';
+import { SOUND_LIBRARY, TRACKS, SOUND_VARIANTS, kitForPreset, resolveSound } from '../src/audio/library.js';
 
 test('all presets contain in-range sequencer steps and valid tempos', () => {
   assert.equal(Object.keys(PRESETS).length, 4);
@@ -13,7 +14,17 @@ test('all presets contain in-range sequencer steps and valid tempos', () => {
   }
 });
 test('library provides every built-in instrument', () => {
-  assert.deepEqual(new Set(SOUND_LIBRARY.map(s => s.id)), new Set(['kick', 'snare', 'hat', 'openHat', 'bass', 'bell', 'impact']));
+  assert.equal(SOUND_LIBRARY.length, 42);
+  assert.equal(new Set(SOUND_LIBRARY.map(s => s.id)).size, 42);
+  assert.equal(TRACKS.length, 7);
+  for (const track of TRACKS) {
+    assert.equal(SOUND_VARIANTS[track.id].length, 6);
+    for (const [id] of SOUND_VARIANTS[track.id]) assert.equal(resolveSound(track.id, id).id, id);
+  }
+  for (const preset of Object.keys(PRESETS)) {
+    const kit = kitForPreset(preset);
+    for (const track of TRACKS) assert.equal(resolveSound(track.id, kit[track.id]).family, track.id);
+  }
 });
 test('swing alters odd steps only', () => {
   assert.equal(stepTime(2, 120, 0.2), stepTime(2, 120));

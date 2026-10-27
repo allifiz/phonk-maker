@@ -39,16 +39,6 @@ export const PRESETS = {
   }
 };
 
-export const SOUND_LIBRARY = [
-  { id: 'kick', name: 'IRON KICK', category: 'DRUMS', detail: 'Pitch-dropped punch / analog attack' },
-  { id: 'snare', name: 'GRIT SNARE', category: 'DRUMS', detail: 'Noise snap / tuned snare body' },
-  { id: 'hat', name: 'RAZOR HAT', category: 'DRUMS', detail: 'Bright metallic closed hi-hat' },
-  { id: 'openHat', name: 'AIR HAT', category: 'DRUMS', detail: 'Long filtered open hi-hat' },
-  { id: 'bass', name: 'SUBJECT 808', category: 'BASS', detail: 'Tuned sub oscillator / soft clipper' },
-  { id: 'bell', name: 'MEMPHIS BELL', category: 'MELODY', detail: 'Dual-metallic oscillator cowbell' },
-  { id: 'impact', name: 'DROP IMPACT', category: 'FX', detail: 'Synthesized noise sweep and sub drop' }
-];
-
 export const TONICS = {
   C: 36, 'C#': 37, D: 38, 'D#': 39, E: 40, F: 41,
   'F#': 42, G: 43, 'G#': 44, A: 45, 'A#': 46, B: 47

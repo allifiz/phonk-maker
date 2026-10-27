@@ -9,8 +9,11 @@
 - Import MP3, WAV, OGG, M4A, AAC, or FLAC when supported by Chromium's decoder (WAV and MP3 are best supported).
 - Local BPM suggestion using onset autocorrelation. Edit source BPM manually to correct inaccurate estimates.
 - Four independent groove templates: **Drift Fury**, **Brazilian Heat**, **Memphis Shadow**, **Dark Pulse**.
-- Seven built-in, original synthesized sounds: 808, kick, snare, closed hat, open hat, cowbell, impact.
-- Sequenced beat arrangement with intro, fills, drop impact and breaks.
+- **42 built-in synthesized sounds**, six independently tuned/timbre-shaped variations per seven families: kick, snare, closed hat, open hat, 808, cowbell, FX.
+- Auto arrangements with intro, fills and breaks, **plus Manual Remix with editable 16-step patterns**.
+- Select instrument variants, toggle every sequencer step, edit bass/cowbell pitches and 808 lengths, mute tracks, and mix track levels.
+- Four-bar loop audition, JSON pattern import/export, and local autosave of manual beat settings.
+- Manual mode can generate standalone original beats (8, 16, 32, or 64 bars) without importing a recording.
 - Adjustable aggression, 808 weight, tonic/root note, drum-grid offset and layer switches.
 - Chunked offline PCM rendering with reusable synthesized one-shots, accurate progress/cancel, playable preview, and 16-bit PCM WAV export.
 - No server, API keys, or copyrighted sample packs.
@@ -57,12 +60,13 @@ The installer is **not code signed**. Windows may warn about unknown publishers.
 
 ## Workflow
 
-1. Import an audio file.
-2. Choose a groove preset.
+1. Optionally import an audio file. Manual mode supports beat-only creation.
+2. Choose a groove preset and select Auto or Manual Remix.
 3. Confirm source BPM, set target BPM, and set the 808 root note.
 4. Adjust beat start offset to align the synthesized kick with the source's first downbeat.
-5. Adjust aggression and bass, then generate.
-6. Listen and export WAV.
+5. In Manual mode, click the 16-step grid, choose an instrument for each row, change pitch and per-track volume, then audition the beat. Optionally export the pattern to JSON and re-import it later.
+6. Adjust aggression and bass, then generate.
+7. Listen and export WAV.
 
 **Important:** The MVP changes the original track's pitch when adjusting tempo, because it uses playback-rate adjustment rather than independent time stretching. Bass root note is user-specified (there is no key detection). Heavily compressed tracks can produce imperfect mixes. This is a fast creative prototype, not a replacement for a DAW or mastering engineer.
 

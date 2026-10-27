@@ -1,4 +1,6 @@
 import { PRESETS, TONICS, stepTime } from './presets.js';
+import { SOUND_INDEX, resolveSound, kitForPreset } from './library.js';
+import { normalizePattern } from './patterns.js';
 
 // This renderer uses reusable PCM samples and bounded chunks rather than
 // constructing thousands of AudioNodes for a single OfflineAudioContext.
@@ -35,67 +37,101 @@ function noiseGenerator(seed = 19571) {
   };
 }
 
-function synthesize(id, config, note = 0, duration = 0.2) {
+function synthesize(soundId, config, note = 0, duration = 0.2) {
+  const sound = SOUND_INDEX[soundId] || SOUND_INDEX.kick;
+  const id = sound.family;
+  const variant = sound.variant;
   const aggression = clamp(Number(config.aggression) || 0, 0, 100) / 100;
   const tonic = TONICS[config.key] ?? TONICS.A;
   const lengthSeconds = {
-    kick: 0.29, snare: 0.22, hat: 0.09, openHat: 0.38,
-    bass: clamp(duration + 0.04, 0.10, 2.0), bell: 0.22, impact: 0.85
+    kick: [0.29, 0.43, 0.18, 0.46, 0.21, 0.25][variant],
+    snare: [0.22, 0.12, 0.39, 0.12, 0.24, 0.3][variant],
+    hat: [0.09, 0.13, 0.045, 0.13, 0.1, 0.08][variant],
+    openHat: [0.38, 0.63, 0.22, 0.48, 0.49, 0.42][variant],
+    bass: clamp(duration + (variant === 4 ? 0.01 : 0.05), 0.10, variant === 4 ? 0.5 : 2.0),
+    bell: [0.22, 0.39, 0.42, 0.12, 0.47, 0.24][variant],
+    impact: [0.85, 1.15, 0.95, 0.42, 0.85, 0.95][variant]
   }[id];
-  if (!lengthSeconds) throw new Error('Unknown sound: ' + id);
+  if (!lengthSeconds) throw new Error('Unknown sound: ' + soundId);
   const size = Math.ceil(lengthSeconds * RATE);
   const wave = new Float32Array(size);
-  const rand = noiseGenerator(id.length * 901 + note * 31 + 4181);
+  const rand = noiseGenerator(id.length * 901 + note * 31 + variant * 314159 + 4181);
   const bassHz = midiHz(tonic - 12 + note);
-  const bellHz = midiHz(tonic + 24 + note);
+  const bellHz = midiHz(tonic + 24 + note + (variant === 4 ? -12 : 0));
+  const bellRatios = [1.47, 1.3, 1.81, 1.5, 1.32, 1.66];
   const bellA = TWO_PI * bellHz / RATE;
-  const bellB = TWO_PI * bellHz * 1.47 / RATE;
+  const bellB = TWO_PI * bellHz * bellRatios[variant] / RATE;
   const bassStep = TWO_PI * bassHz / RATE;
+  const kickTuning = [43, 35, 54, 38, 47, 58][variant];
+  const kickDecay = [18, 10, 36, 11, 26, 20][variant];
+  const kickClick = [0.2, 0.08, 0.45, 0.15, 0.055, 0.55][variant];
+  const snareDecay = [19, 37, 9, 45, 18, 14][variant];
+  const snareTone = [178, 220, 143, 355, 155, 199][variant];
   let kickPhase = 0;
   let impactPhase = 0;
   let highpassPrevious = 0;
   let lowpassPrevious = 0;
+  const attackFade = 100;
   for (let i = 0; i < size; i++) {
     const t = i / RATE;
     const u = i / size;
     let value = 0;
     if (id === 'kick') {
-      const frequency = 43 + (175 + aggression * 50) * Math.exp(-t * 45);
+      const frequency = kickTuning + (145 + aggression * 50) * Math.exp(-t * (variant === 1 ? 30 : 48));
       kickPhase += TWO_PI * frequency / RATE;
-      value = Math.sin(kickPhase) * Math.exp(-t * 18) * (0.75 + aggression * 0.2)
-        + rand() * 0.2 * Math.exp(-t * 140);
+      const body = Math.sin(kickPhase) + (variant === 5 ? 0.28 * Math.sin(kickPhase * 2) : 0);
+      value = body * Math.exp(-t * kickDecay) * (0.75 + aggression * 0.2)
+        + rand() * kickClick * Math.exp(-t * 160);
     } else if (id === 'snare') {
       const n = rand();
-      const high = n - highpassPrevious * 0.8;
+      const high = n - highpassPrevious * [0.8, 0.91, 0.48, 0.97, 0.72, 0.62][variant];
       highpassPrevious = n;
-      value = (high * 0.49 + Math.sin(TWO_PI * 178 * t) * 0.18)
-        * Math.exp(-t * 19) * (0.88 + aggression * 0.14);
+      const pitched = Math.sin(TWO_PI * snareTone * t);
+      value = (high * [0.49, 0.4, 0.53, 0.6, 0.37, 0.67][variant]
+        + pitched * [0.18, 0.09, 0.26, 0.26, 0.16, 0.2][variant])
+        * Math.exp(-t * snareDecay) * (0.88 + aggression * 0.14);
+      if (variant === 5) value = Math.tanh(value * 3) * 0.7;
     } else if (id === 'hat' || id === 'openHat') {
       const n = rand();
-      lowpassPrevious += (n - lowpassPrevious) * 0.18;
+      const filter = [0.18, 0.32, 0.10, 0.10, 0.43, 0.05][variant];
+      lowpassPrevious += (n - lowpassPrevious) * filter;
       const high = n - lowpassPrevious;
-      value = high * (id === 'hat' ? 0.25 : 0.28)
-        * Math.exp(-t * (id === 'hat' ? 56 : 12));
+      const speed = id === 'hat' ? [56, 27, 140, 46, 47, 69][variant]
+        : [12, 5.8, 24, 8.5, 9, 10][variant];
+      const ring = variant === 3 ? Math.sin(TWO_PI * 3200 * t) * 0.65 : 1;
+      value = high * ring * (id === 'hat' ? 0.25 : 0.28) * Math.exp(-t * speed);
+      if (variant === 4) value *= 0.57;
     } else if (id === 'bass') {
-      // Short fade-in and fade-out prevent clicks where notes terminate.
       const fadeIn = Math.min(1, t / 0.006);
       const fadeOut = Math.min(1, (lengthSeconds - t) / 0.028);
-      const envelope = Math.max(0, fadeIn * fadeOut) * (0.76 + 0.24 * Math.exp(-t * 1.5));
-      const signal = Math.sin(bassStep * i) * 0.9 + Math.sin(bassStep * 2 * i) * 0.11;
-      const drive = 1.3 + aggression * 2.2;
+      let envelope = Math.max(0, fadeIn * fadeOut) * (0.76 + 0.24 * Math.exp(-t * 1.5));
+      if (variant === 4) envelope *= Math.exp(-t * 10);
+      const a = Math.sin(bassStep * i);
+      const b = Math.sin(bassStep * 2 * i);
+      let signal;
+      if (variant === 0) signal = a * 0.9 + b * 0.11;
+      else if (variant === 1) signal = a;
+      else if (variant === 2) signal = a * 0.7 + b * 0.52 + Math.sin(bassStep * 3 * i) * 0.3;
+      else if (variant === 3) signal = a * 0.48 + Math.sin(bassStep * 1.012 * i) * 0.48 + b * 0.2;
+      else if (variant === 4) signal = a * 0.92 + b * 0.1;
+      else signal = Math.tanh(a * 4) + b * 0.3;
+      const drive = variant === 1 ? 0.83 : variant === 2 ? 4.5 : variant === 5 ? 5 : 1.3 + aggression * 2.2;
       value = Math.tanh(signal * drive) * envelope * (0.52 + aggression * 0.12);
     } else if (id === 'bell') {
-      const first = Math.sin(bellA * i) >= 0 ? 1 : -1;
-      const second = Math.sin(bellB * i) >= 0 ? 1 : -1;
-      value = (first * 0.22 + second * 0.14) * Math.exp(-t * 20);
+      const first = variant === 1 ? Math.sin(bellA * i) : Math.sin(bellA * i) >= 0 ? 1 : -1;
+      const second = variant === 1 ? Math.sin(bellB * i) : Math.sin(bellB * i) >= 0 ? 1 : -1;
+      const ring = variant === 5 ? Math.sin(TWO_PI * 35 * t) : 1;
+      value = (first * 0.22 + second * [0.14, 0.09, 0.21, 0.12, 0.15, 0.19][variant])
+        * ring * Math.exp(-t * [20, 8, 9, 39, 6.5, 18][variant]);
     } else if (id === 'impact') {
-      const frequency = 35 + 90 * Math.exp(-t * 7);
+      const frequency = (variant === 1 ? 28 : 35) + (variant === 1 ? 65 : 90) * Math.exp(-t * 7);
       impactPhase += TWO_PI * frequency / RATE;
-      lowpassPrevious += (rand() - lowpassPrevious) * 0.035;
-      value = lowpassPrevious * Math.exp(-t * 3) * 0.7
-        + Math.sin(impactPhase) * Math.exp(-t * 5) * 0.45;
+      const filter = variant === 4 ? 0.26 : variant === 5 ? 0.015 : 0.035;
+      lowpassPrevious += (rand() - lowpassPrevious) * filter;
+      const fade = variant === 2 ? Math.sin(Math.PI * u / 2) : Math.exp(-t * 3);
+      value = lowpassPrevious * fade * (variant === 4 ? 1.3 : 0.7)
+        + Math.sin(impactPhase) * Math.exp(-t * (variant === 3 ? 14 : 5)) * 0.45;
     }
-    // A very short fade at the endpoint prevents a sample discontinuity.
     wave[i] = value * Math.min(1, (size - 1 - i) / 100);
   }
   return wave;
@@ -106,12 +142,32 @@ function createEvents(preset, config, frames, bpm) {
   const barDuration = 240 / bpm;
   const totalBars = Math.ceil(frames / RATE / barDuration);
   const offset = clamp(Number(config.beatOffset) || 0, 0, 0.75);
+  const kit = { ...kitForPreset(config.preset), ...config.kit };
   const add = (id, time, note = 0, duration = 0.2) => {
+    if (config.trackMutes?.[id]) return;
     const frame = Math.round(time * RATE);
     if (frame >= 0 && frame < frames) {
-      events.push({ id, frame, note, duration });
+      events.push({ id, soundId: resolveSound(id, kit[id]).id, frame, note, duration });
     }
   };
+  if (config.mode === 'manual') {
+    const pattern = normalizePattern(config.manualPattern);
+    for (let bar = 0; bar < totalBars; bar++) {
+      const start = offset + bar * barDuration;
+      if (start >= frames / RATE) break;
+      for (const track of ['kick', 'snare', 'hat', 'openHat', 'bass', 'bell', 'impact']) {
+        if (track === 'bell' && config.cowbell === false) continue;
+        if (track === 'impact' && config.effects === false) continue;
+        for (const entry of pattern[track]) {
+          const [step, note, length] = Array.isArray(entry) ? entry : [entry, 0, 1];
+          const duration = track === 'bass' ? length * (60 / bpm / 4) * 0.86 : 0.2;
+          add(track, start + stepTime(step, bpm, preset.swing), note, duration);
+        }
+      }
+    }
+    events.sort((a, b) => a.frame - b.frame);
+    return events;
+  }
   for (let bar = 0; bar < totalBars; bar++) {
     const start = offset + bar * barDuration;
     if (start >= frames / RATE) break;
@@ -178,10 +234,11 @@ function writeWavHeader(frameCount) {
 function eventGain(id, config) {
   const aggression = clamp(Number(config.aggression) || 0, 0, 100) / 100;
   const bass = clamp(Number(config.bass) || 0, 0, 100) / 100;
-  if (id === 'bass') return 0.45 + bass * 0.53;
-  if (id === 'bell') return 0.31 + aggression * 0.13;
-  if (id === 'impact') return 0.6;
-  return 0.56 + aggression * 0.3;
+  const trackVolume = clamp(Number(config.trackGains?.[id] ?? 100), 0, 150) / 100;
+  let gain = id === 'bass' ? 0.45 + bass * 0.53
+    : id === 'bell' ? 0.31 + aggression * 0.13
+    : id === 'impact' ? 0.6 : 0.56 + aggression * 0.3;
+  return gain * trackVolume;
 }
 
 function mixSource(left, right, begin, source, config, bpm, sourceBpm) {
@@ -249,8 +306,8 @@ export async function renderRemix(input, config, onProgress = () => {}, signal) 
   // Cache each one-shot once. Number of Web Audio nodes during render: zero.
   const cache = new Map();
   for (const event of events) {
-    const key = [event.id, event.note, event.duration.toFixed(4)].join('/');
-    if (!cache.has(key)) cache.set(key, synthesize(event.id, config, event.note, event.duration));
+    const key = [event.soundId, event.note, event.duration.toFixed(4)].join('/');
+    if (!cache.has(key)) cache.set(key, synthesize(event.soundId, config, event.note, event.duration));
     event.sample = cache.get(key);
     event.gain = eventGain(event.id, config);
   }
@@ -292,12 +349,14 @@ export async function renderRemix(input, config, onProgress = () => {}, signal) 
 
 export async function previewInstrument(id, key = 'A') {
   const config = { aggression: 78, bass: 85, key };
-  const signal = synthesize(id, config, 0, id === 'bass' ? 0.6 : 0.2);
+  const sound = SOUND_INDEX[id];
+  if (!sound) throw new Error('Unknown sound: ' + id);
+  const signal = synthesize(id, config, 0, sound.family === 'bass' ? 0.6 : 0.2);
   const count = RATE;
   const left = new Float32Array(count);
   const right = new Float32Array(count);
   const start = Math.floor(0.12 * RATE);
-  const gain = eventGain(id, config);
+  const gain = eventGain(sound.family, config);
   for (let i = 0; i < signal.length && i + start < count; i++) {
     left[i + start] = signal[i] * gain;
     right[i + start] = signal[i] * gain;

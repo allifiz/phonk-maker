@@ -7,12 +7,18 @@ import {
 } from 'lucide-react';
 import { decodeMusic, previewInstrument, renderRemix } from './audio/engine.js';
 import { estimateBpm } from './audio/bpm.js';
-import { PRESETS, SOUND_LIBRARY, TONICS } from './audio/presets.js';
+import { PRESETS, TONICS } from './audio/presets.js';
+import { SOUND_LIBRARY, kitForPreset } from './audio/library.js';
+import { patternFromPreset, normalizePattern, normalizeKit, normalizeTrackValues, DEFAULT_TRACK_GAINS, DEFAULT_TRACK_MUTES } from './audio/patterns.js';
+import ManualSequencer from './ManualSequencer.jsx';
 
 const INITIAL = {
   preset: 'drift', bpm: 150, sourceBpm: 120, key: 'A',
   aggression: 82, bass: 80, cowbell: true, effects: true,
-  keepOriginal: true, beatOffset: 0
+  keepOriginal: true, beatOffset: 0,
+  mode: 'auto', manualBars: 32, manualPattern: patternFromPreset('drift'),
+  kit: kitForPreset('drift'), trackGains: { ...DEFAULT_TRACK_GAINS },
+  trackMutes: { ...DEFAULT_TRACK_MUTES }
 };
 
 const GROUPS = ['DRUMS', 'BASS', 'MELODY', 'FX'];
@@ -77,7 +83,19 @@ function Switch({ label, detail, checked, onChange }) {
 
 export default function App() {
   const [tab, setTab] = useState('studio');
-  const [config, setConfig] = useState(INITIAL);
+  const [config, setConfig] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('phonkforge-pattern-v1'));
+      if (saved?.version === 1) return {
+        ...INITIAL,
+        manualPattern: normalizePattern(saved.manualPattern),
+        kit: normalizeKit(saved.kit),
+        trackGains: normalizeTrackValues(saved.trackGains, DEFAULT_TRACK_GAINS, 0, 150, true),
+        trackMutes: normalizeTrackValues(saved.trackMutes, DEFAULT_TRACK_MUTES, 0, 1, false)
+      };
+    } catch { /* Use default grid if storage is unavailable or corrupt. */ }
+    return INITIAL;
+  });
   const [song, setSong] = useState(null);
   const [output, setOutput] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -94,6 +112,14 @@ export default function App() {
   const audioRef = useRef(null);
   const oneShotRef = useRef(null);
   const preset = PRESETS[config.preset];
+  useEffect(() => {
+    try {
+      localStorage.setItem('phonkforge-pattern-v1', JSON.stringify({
+        version: 1, manualPattern: config.manualPattern, kit: config.kit,
+        trackGains: config.trackGains, trackMutes: config.trackMutes
+      }));
+    } catch { /* Storage is optional. */ }
+  }, [config.manualPattern, config.kit, config.trackGains, config.trackMutes]);
 
   useEffect(() => () => {
     if (output?.url) URL.revokeObjectURL(output.url);
@@ -106,7 +132,7 @@ export default function App() {
 
   function pickPreset(id) {
     const chosen = PRESETS[id];
-    update({ preset: id, bpm: chosen.bpm });
+    update({ preset: id, bpm: chosen.bpm, kit: kitForPreset(id) });
   }
 
   async function importFile(file) {
@@ -131,7 +157,7 @@ export default function App() {
   }
 
   async function generate() {
-    if (!song || busy) return;
+    if ((!song && config.mode !== 'manual') || busy) return;
     setBusy(true);
     setRenderProgress(0);
     const controller = new AbortController();
@@ -140,7 +166,15 @@ export default function App() {
     setPlaying(false);
     if (audioRef.current) audioRef.current.pause();
     try {
-      const rendered = await renderRemix(song.buffer, config, setRenderProgress, controller.signal);
+      let input = song?.buffer;
+      let options = config;
+      if (!song && config.mode === 'manual') {
+        const seconds = (config.manualBars || 32) * 240 / Math.max(60, config.bpm);
+        const silence = new Float32Array(Math.ceil(seconds * 44100));
+        input = { duration: seconds, sampleRate: 44100, numberOfChannels: 1, getChannelData: () => silence };
+        options = { ...config, keepOriginal: false, sourceBpm: config.bpm, beatOffset: 0 };
+      }
+      const rendered = await renderRemix(input, options, setRenderProgress, controller.signal);
       const url = URL.createObjectURL(rendered.blob);
       setOutput({ ...rendered, url });
       setPosition(0);
@@ -167,43 +201,59 @@ export default function App() {
   function download() {
     if (!output?.url) return;
     const a = document.createElement('a');
-    const title = song.name.replace(/\.[^.]+$/, '').replace(/[^\w.-]+/g, '-');
+    const title = song ? song.name.replace(/\.[^.]+$/, '').replace(/[^\w.-]+/g, '-') : 'original-phonk-beat';
     a.href = output.url;
-    a.download = title + '-' + config.preset + '-phonkforge.wav';
+    a.download = title + '-' + config.mode + '-' + config.preset + '-phonkforge.wav';
     document.body.append(a);
     a.click();
     a.remove();
   }
 
+  async function playPreview(blob, id) {
+    if (oneShotRef.current) oneShotRef.current.pause();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    oneShotRef.current = audio;
+    const cleanup = () => {
+      URL.revokeObjectURL(url);
+      setPreviewing(previous => previous === id ? '' : previous);
+    };
+    audio.addEventListener('ended', cleanup, { once: true });
+    audio.addEventListener('error', cleanup, { once: true });
+    try { await audio.play(); } catch (error) { cleanup(); throw error; }
+  }
+
   async function audition(id) {
+    if (previewing) return;
     setPreviewing(id);
     setError('');
     try {
-      if (oneShotRef.current) {
-        oneShotRef.current.pause();
-        oneShotRef.current = null;
-      }
       const clip = await previewInstrument(id, config.key);
-      const url = URL.createObjectURL(clip);
-      const audio = new Audio(url);
-      oneShotRef.current = audio;
-      audio.onended = () => {
-        URL.revokeObjectURL(url);
-        setPreviewing('');
-      };
-      audio.onerror = () => {
-        URL.revokeObjectURL(url);
-        setPreviewing('');
-      };
-      await audio.play();
+      await playPreview(clip, id);
     } catch {
-      setError('Sample preview could not start.');
+      setError('Sound preview could not start.');
+      setPreviewing('');
+    }
+  }
+  async function auditionManualLoop() {
+    if (previewing) return;
+    setPreviewing('loop');
+    setError('');
+    try {
+      const seconds = 4 * 240 / Math.max(60, config.bpm);
+      const silence = new Float32Array(Math.ceil(seconds * 44100));
+      const input = { duration: seconds, sampleRate: 44100, numberOfChannels: 1, getChannelData: () => silence };
+      const options = { ...config, mode: 'manual', sourceBpm: config.bpm, keepOriginal: false, beatOffset: 0 };
+      const { blob } = await renderRemix(input, options);
+      await playPreview(blob, 'loop');
+    } catch {
+      setError('Could not preview the manual loop.');
       setPreviewing('');
     }
   }
 
   const rate = config.bpm / config.sourceBpm;
-  const minutes = song ? timeLabel(song.duration / rate) : '--:--';
+  const minutes = song ? timeLabel(song.duration / rate) : config.mode === 'manual' ? timeLabel((config.manualBars || 32) * 240 / Math.max(60, config.bpm)) : '--:--';
   const tooLong = song && song.duration / rate > 15 * 60;
 
   return (
@@ -213,7 +263,7 @@ export default function App() {
         <div className="side-caption">WORKSPACE</div>
         <nav>
           <button className={'nav-item ' + (tab === 'studio' ? 'selected' : '')} onClick={() => setTab('studio')}><SlidersHorizontal size={18}/> Remix Studio <ChevronRight size={15} className="nav-chevron"/></button>
-          <button className={'nav-item ' + (tab === 'library' ? 'selected' : '')} onClick={() => setTab('library')}><Layers3 size={18}/> Sound Library <span className="count">07</span></button>
+          <button className={'nav-item ' + (tab === 'library' ? 'selected' : '')} onClick={() => setTab('library')}><Layers3 size={18}/> Sound Library <span className="count">{SOUND_LIBRARY.length}</span></button>
           <button className={'nav-item ' + (tab === 'about' ? 'selected' : '')} onClick={() => setTab('about')}><CircleHelp size={18}/> How it works</button>
         </nav>
         <div className="side-spacer" />
@@ -272,14 +322,23 @@ export default function App() {
                 ))}
               </div>
 
-              <div className="section-head"><div><span className="step">03</span><strong>RENDER YOUR REMIX</strong></div><span className="muted-label">OFFLINE RENDER</span></div>
+              <div className="section-head"><div><span className="step">03</span><strong>REMIX WORKFLOW</strong></div><span className="muted-label">AUTO OR MANUAL</span></div>
+              <div className="mode-selector" role="group" aria-label="Remix mode">
+                <button className={config.mode === 'auto' ? 'chosen' : ''} onClick={() => update({ mode: 'auto' })}><WandSparkles size={17}/> AUTO REMIX <small>Genre arrangement, fills and breaks</small></button>
+                <button className={config.mode === 'manual' ? 'chosen' : ''} onClick={() => update({ mode: 'manual' })}><SlidersHorizontal size={17}/> MANUAL REMIX <small>Build every beat yourself</small></button>
+              </div>
+              {config.mode === 'manual'
+                ? <ManualSequencer config={config} onChange={update} onAudition={audition} onPreviewLoop={auditionManualLoop} previewing={previewing} onError={setError}/>
+                : <p className="mode-explanation">Auto mode builds an arrangement using your genre preset. Switch to Manual Remix to choose every hit and sound.</p>
+              }
+              <div className="section-head"><div><span className="step">04</span><strong>RENDER YOUR REMIX</strong></div><span className="muted-label">OFFLINE RENDER</span></div>
               <div className="render-card">
                 <div className="render-top"><div className="render-title"><div className="render-icon"><WandSparkles size={23}/></div>
-                  <div><strong>PHONK GENERATOR</strong><span>{song ? 'Estimated ' + minutes + ' output · ' + config.bpm + ' BPM' : 'Import a track to unlock rendering'}</span></div></div>
+                  <div><strong>{config.mode === 'manual' ? 'MANUAL PHONK RENDERER' : 'PHONK GENERATOR'}</strong><span>{song || config.mode === 'manual' ? 'Estimated ' + minutes + ' output · ' + config.bpm + ' BPM' : 'Import a track or switch to manual mode'}</span></div></div>
                   <span className="engine-badge">WAV · 44.1 KHZ</span>
                 </div>
                 {tooLong && <p className="warning">This output exceeds 15 minutes. Shorten the source or increase target BPM.</p>}
-                <button className="generate-btn" disabled={!song || busy || importing || tooLong} onClick={generate}>
+                <button className="generate-btn" disabled={(!song && config.mode !== 'manual') || busy || importing || tooLong} onClick={generate}>
                   {busy ? <><Activity size={19} className="spin"/> RENDERING {renderProgress}%...</> : <><Zap size={20} fill="currentColor"/> GENERATE PHONK REMIX <ChevronRight size={19}/></>}
                 </button>
                 {busy && <div className="render-progress" role="status"><div><span>RENDERING WAV · {renderProgress}% COMPLETE</span><button onClick={() => renderController.current?.abort()}>CANCEL RENDER</button></div><progress max="100" value={renderProgress} aria-label="Render progress" /></div>}
@@ -297,7 +356,7 @@ export default function App() {
                         onChange={e => { if (audioRef.current) audioRef.current.currentTime = Number(e.target.value); setPosition(Number(e.target.value)); }} />
                     </div><span className="player-time">{timeLabel(position)} / {timeLabel(output.duration)}</span>
                   </div>
-                  {output.truncated && <p className="warning">The source was trimmed to the 4-minute output limit.</p>}
+
                   <button className="download-btn" onClick={download}><Download size={17}/> DOWNLOAD WAV REMIX</button>
                 </div>
               )}
@@ -331,8 +390,8 @@ export default function App() {
         {tab === 'library' && <div className="single-page">
           <div className="eyebrow"><span className="eyebrow-mark"/> SYNTHESIZED FROM SCRATCH</div>
           <h1 className="subpage-title">SOUND <em>ARSENAL</em><span className="red-period">.</span></h1>
-          <p className="subpage-intro">Seven original instruments generated by the built-in engine. Nothing to download. Nothing to license. Preview individual hits below.</p>
-          <div className="library-stats"><span>07 <small>BUILT-IN SOUNDS</small></span><span>04 <small>GENRE ARRANGEMENTS</small></span><span>00 <small>EXTERNAL SAMPLE FILES</small></span></div>
+          <p className="subpage-intro">{SOUND_LIBRARY.length} unique synthesized variations across seven instrument families. Original sounds with different envelopes, tuning, distortion and timbre. No external downloads.</p>
+          <div className="library-stats"><span>{SOUND_LIBRARY.length} <small>BUILT-IN SOUNDS</small></span><span>07 <small>INSTRUMENT FAMILIES</small></span><span>04 <small>GENRE ARRANGEMENTS</small></span></div>
           {GROUPS.map(category => <section key={category} className="library-group"><div className="section-head"><div><span className="step"><AudioLines size={13}/></span><strong>{category}</strong></div><span className="muted-label">{SOUND_LIBRARY.filter(s => s.category === category).length} SOUNDS</span></div>
             <div className="sound-list">{SOUND_LIBRARY.filter(s => s.category === category).map(sound =>
               <div className="sound-item" key={sound.id}><span className="sound-icon"><AudioWaveform size={20}/></span>
@@ -345,13 +404,13 @@ export default function App() {
         {tab === 'about' && <div className="single-page">
           <div className="eyebrow"><span className="eyebrow-mark"/> MANUAL / V0.1</div>
           <h1 className="subpage-title">LOUDER BY <em>DESIGN</em><span className="red-period">.</span></h1>
-          <p className="subpage-intro">PhonkForge is a focused remix generator, not a full DAW. Every sound is made from Web Audio oscillators, noise, and filters.</p>
+          <p className="subpage-intro">PhonkForge is an offline remix maker with 42 procedural sounds and an editable 16-step manual sequencer. It is not a full DAW.</p>
           <div className="help-grid">
             {[
               ['01', 'IMPORT MUSIC', 'Bring your MP3 or WAV. The decoder reads it locally, and the BPM detector suggests a starting tempo.'],
               ['02', 'PICK A PRESET', 'Choose Drift, Brazilian, Memphis, or Atmospheric. Every preset supplies a different beat, 808 rhythm, and cowbell sequence.'],
               ['03', 'CORRECT THE GRID', 'Set source BPM accurately and adjust the beat start offset so generated hits land with the first downbeat.'],
-              ['04', 'RENDER & EXPORT', 'The app mixes the source with the synthesized layers offline. Preview and export uncompressed 16-bit WAV.']
+              ['04', 'RENDER & EXPORT', 'Use Auto mode or edit your own 16-step beat. Preview four-bar loops, mix the source and export WAV.']
             ].map(([num, title, description]) => <div className="help-card" key={num}><span>{num}</span><h3>{title}</h3><p>{description}</p></div>)}
           </div>
           <div className="limitations"><Sparkles size={21}/><div><strong>KNOWN LIMITATIONS</strong><p>There is no stem separation, accurate key detection, independent time stretching, MP3 export, or full mastering yet. Source audio pitch changes when BPM changes. This MVP intentionally avoids pretending otherwise.</p></div></div>
