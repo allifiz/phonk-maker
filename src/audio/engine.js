@@ -2,6 +2,7 @@ import { PRESETS, TONICS, stepTime } from './presets.js';
 import { SOUND_INDEX, resolveSound, kitForPreset } from './library.js';
 import { normalizePattern } from './patterns.js';
 import { normalizeTimeline } from './timeline.js';
+import { renderHitPCM, hitTotalDuration, sourceFxSettings, sourcePlaybackRate } from './hitEffects.js';
 
 // This renderer uses reusable PCM samples and bounded chunks rather than
 // constructing thousands of AudioNodes for a single OfflineAudioContext.
@@ -149,6 +150,8 @@ function createEvents(preset, config, frames, bpm) {
       events.push({
         id: clip.track, soundId: clip.soundId, frame,
         note: clip.note, duration: clip.steps * (60 / bpm / 4) * 0.86,
+        durationSeconds: clip.durationSeconds, pitchFx: clip.pitchFx,
+        pitchAmount: clip.pitchAmount, echo: clip.echo,
         volume: clip.volume
       });
     }
@@ -256,19 +259,27 @@ function eventGain(id, config) {
   return gain * trackVolume;
 }
 
-function mixSource(left, right, begin, source, config, bpm, sourceBpm) {
-  if (!config.keepOriginal) return;
+function mixSource(left, right, begin, source, config, rate, state) {
+  const { volume, cutoff, highpass } = sourceFxSettings(config);
+  if (volume <= 0) return;
   const inputLeft = source.getChannelData(0);
   const inputRight = source.numberOfChannels > 1 ? source.getChannelData(1) : inputLeft;
-  const scale = (bpm / sourceBpm) * source.sampleRate / RATE;
+  const scale = rate * source.sampleRate / RATE;
+  const lowAlpha = 1 - Math.exp(-2 * Math.PI * cutoff / RATE);
+  const highAlpha = 1 - Math.exp(-2 * Math.PI * highpass / RATE);
   let index = begin * scale;
-  const gain = 0.48;
   for (let i = 0; i < left.length; i++, index += scale) {
     const j = Math.floor(index);
     if (j >= inputLeft.length - 1) break;
     const f = index - j;
-    left[i] = (inputLeft[j] + (inputLeft[j + 1] - inputLeft[j]) * f) * gain;
-    right[i] = (inputRight[j] + (inputRight[j + 1] - inputRight[j]) * f) * gain;
+    const l = inputLeft[j] + (inputLeft[j + 1] - inputLeft[j]) * f;
+    const r = inputRight[j] + (inputRight[j + 1] - inputRight[j]) * f;
+    state.low[0] += (l - state.low[0]) * lowAlpha;
+    state.low[1] += (r - state.low[1]) * lowAlpha;
+    state.high[0] += (state.low[0] - state.high[0]) * highAlpha;
+    state.high[1] += (state.low[1] - state.high[1]) * highAlpha;
+    left[i] = (state.low[0] - state.high[0]) * volume;
+    right[i] = (state.low[1] - state.high[1]) * volume;
   }
 }
 
@@ -307,7 +318,7 @@ export async function renderRemix(input, config, onProgress = () => {}, signal) 
   const preset = PRESETS[config.preset] || PRESETS.drift;
   const sourceBpm = clamp(Number(config.sourceBpm) || preset.bpm, 50, 240);
   const bpm = clamp(Number(config.bpm) || preset.bpm, 60, 210);
-  const rate = bpm / sourceBpm;
+  const rate = sourcePlaybackRate({ ...config, sourceBpm, bpm });
   const duration = input.duration / rate;
   if (!Number.isFinite(duration) || duration <= 0) throw new Error('The source audio is empty or invalid.');
   if (duration > MAX_RENDER_SECONDS) {
@@ -321,15 +332,21 @@ export async function renderRemix(input, config, onProgress = () => {}, signal) 
   // Cache each one-shot once. Number of Web Audio nodes during render: zero.
   const cache = new Map();
   for (const event of events) {
+    event.gain = eventGain(event.id, config) * ((event.volume ?? 100) / 100);
+    if (config.mode === 'timeline') {
+      // Long or uniquely treated hits must not all allocate PCM up front.
+      event.endFrame = event.frame + Math.ceil(hitTotalDuration(event, bpm) * RATE);
+      continue;
+    }
     const key = [event.soundId, event.note, event.duration.toFixed(4)].join('/');
     if (!cache.has(key)) cache.set(key, synthesize(event.soundId, config, event.note, event.duration));
     event.sample = cache.get(key);
-    event.gain = eventGain(event.id, config) * ((event.volume ?? 100) / 100);
   }
 
   const parts = [writeWavHeader(totalFrames)];
   let cursor = 0;
   let head = 0;
+  const sourceState = { low: [0, 0], high: [0, 0] };
   const gainState = { value: 1 }; // Keep limiter gain continuous across chunk boundaries.
   onProgress(0);
   for (let begin = 0; begin < totalFrames; begin += CHUNK_FRAMES) {
@@ -337,11 +354,27 @@ export async function renderRemix(input, config, onProgress = () => {}, signal) 
     const end = Math.min(begin + CHUNK_FRAMES, totalFrames);
     const left = new Float32Array(end - begin);
     const right = new Float32Array(end - begin);
-    mixSource(left, right, begin, input, config, bpm, sourceBpm);
+    mixSource(left, right, begin, input, config, rate, sourceState);
 
-    while (head < events.length && events[head].frame + events[head].sample.length <= begin) head++;
+    while (head < events.length &&
+        (events[head].endFrame ?? events[head].frame + events[head].sample.length) <= begin) {
+      if (config.mode === 'timeline') events[head].sample = null;
+      head++;
+    }
     for (let j = head; j < events.length && events[j].frame < end; j++) {
       const event = events[j];
+      if ((event.endFrame ?? Infinity) <= begin) continue;
+      if (!event.sample) {
+        const key = [event.soundId, event.note, event.durationSeconds, event.pitchFx, event.pitchAmount, event.echo].join('/');
+        let pcm = cache.get(key);
+        if (!pcm) {
+          pcm = renderHitPCM(event, config, synthesizeInstrument);
+          cache.set(key, pcm);
+          // Bound retained synthesized samples for 15-minute timelines.
+          if (cache.size > 32) cache.delete(cache.keys().next().value);
+        }
+        event.sample = pcm;
+      }
       const first = Math.max(begin, event.frame);
       const last = Math.min(end, event.frame + event.sample.length);
       const gain = event.gain;

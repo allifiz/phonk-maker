@@ -13,11 +13,13 @@ import { patternFromPreset, normalizePattern, normalizeKit, normalizeTrackValues
 import ManualSequencer from './ManualSequencer.jsx';
 import LiveTimeline from './LiveTimeline.jsx';
 import { normalizeTimeline } from './audio/timeline.js';
+import { sourcePlaybackRate } from './audio/hitEffects.js';
 
 const INITIAL = {
   preset: 'drift', bpm: 150, sourceBpm: 120, key: 'A',
   aggression: 82, bass: 80, cowbell: true, effects: true,
   keepOriginal: true, beatOffset: 0,
+  sourcePitch: 0, sourceTone: 100, sourceLowCut: 0, sourceLevel: 100,
   mode: 'auto', manualBars: 32, manualPattern: patternFromPreset('drift'),
   kit: kitForPreset('drift'), trackGains: { ...DEFAULT_TRACK_GAINS },
   trackMutes: { ...DEFAULT_TRACK_MUTES }
@@ -263,7 +265,7 @@ export default function App() {
     }
   }
 
-  const rate = config.bpm / config.sourceBpm;
+  const rate = sourcePlaybackRate(config);
   const minutes = song ? timeLabel(song.duration / rate) : config.mode === 'manual' ? timeLabel((config.manualBars || 32) * 240 / Math.max(60, config.bpm)) : '--:--';
   const tooLong = song && song.duration / rate > 15 * 60;
 

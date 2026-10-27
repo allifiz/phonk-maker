@@ -116,3 +116,22 @@ All built-in sounds are synthesized at render time and patterns are original to 
 - [ ] Optional original royalty-cleared soundpack expansion.
 
 Licensed under MIT for the application code.
+
+
+## Precision editor and live sound design
+
+- Select a timeline hit and press **Delete** / **Backspace** to remove it. **Left** / **Right** arrow nudges its position by **0.01s**; add **Shift** for **0.1s** nudges. Shortcuts do not override inputs, dropdowns or editable fields.
+- The **ADD SOUND NOW** control places the selected instrument directly at the current playback position and triggers it immediately. Lane-specific **+ AT PLAYHEAD** buttons remain.
+- Preview instruments with the headphones icon beside each track, or in the hit inspector. The selected hit has a small preview waveform, and **SOURCE ONLY** suppresses generated hits during playback to let you compare the original track.
+- Adjust **DURATION (SECONDS)** for every sample, from 0.05 to 6 seconds. The sample is interpolated *once* with an envelope; it is **never repeatedly looped**.
+- Increasing a hit duration beyond 140% of its original default automatically turns on **RISE** and **35% ECHO** unless already customized. You can switch them off or change them afterward.
+- Each hit has **PITCH FX** (\`NORMAL\`, \`RISE\`, \`DROP\`), semitone sweep intensity, and **ECHO TAIL**. Echo is a finite series of decaying delay taps, not repeated beats. All are included in live preview and WAV export through the same synthesis module.
+- **ORIGINAL SONG EFFECTS** adjust source pitch, low-to-high tone, low cut and source level. Global source pitch uses playback-rate adjustment, and therefore **also changes the source speed and the timeline/output duration**. This is **not independent time stretching**.
+- Rendering stores these hit settings and uses absolute output-second positioning. Project JSON includes hit duration and effects. Existing timeline JSON without FX fields remains importable.
+
+### Known preview limitations
+
+- Under heavy CPU load, live scheduling can have minor glitches and tempo adjustment changes source pitch.
+- Offline export uses efficient one-pole filters while the live transport uses Web Audio biquads, so source EQ tone may not match perfectly at all settings.
+- Pitch bend is relative to each sound's duration-warped original and does not perform pitch-preserving professional time stretching.
+- Source-level FX currently apply globally, not as per-region automation. Full audio-clip lane automation is a later milestone.

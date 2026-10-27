@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { synthesizeInstrument } from './engine.js';
+import { renderHitPCM, sourcePlaybackRate, sourceFxSettings, HIT_DURATIONS } from './hitEffects.js';
 
 const LOOKAHEAD = 0.14; // 140ms ahead protects against UI/layout work interrupting drums
 const TICK_MS = 35;
@@ -10,11 +11,15 @@ const SYNTH_RATE = 44100;
  * Timeline coordinates are OUTPUT seconds. Source rate follows target/source BPM.
  * Only imminent events are scheduled, so multi-minute projects stay responsive.
  */
-export function useLiveTransport({ song, config, events, duration, onError, onStart }) {
+export function useLiveTransport({ song, config, events, duration, onError, onStart, sourceSolo = false }) {
   const audioRef = useRef(null);
   const mixerRef = useRef(null);
   const musicRef = useRef(null);
   const musicGainRef = useRef(null);
+  const sourceFiltersRef = useRef(null);
+  const scheduledRef = useRef(new Set());
+  const sourceSoloRef = useRef(sourceSolo);
+  sourceSoloRef.current = sourceSolo;
   const voicesRef = useRef(new Map());
   const sampleCacheRef = useRef(new Map());
   const timerRef = useRef(null);
@@ -48,6 +53,7 @@ export function useLiveTransport({ song, config, events, duration, onError, onSt
       try { node.disconnect(); } catch { /* already disconnected */ }
     }
     voicesRef.current.clear();
+    scheduledRef.current.clear();
   }, []);
 
   const stopMusic = useCallback(() => {
@@ -59,6 +65,12 @@ export function useLiveTransport({ song, config, events, duration, onError, onSt
     if (musicGainRef.current) {
       try { musicGainRef.current.disconnect(); } catch { /* ignore */ }
       musicGainRef.current = null;
+    }
+    if (sourceFiltersRef.current) {
+      for (const node of sourceFiltersRef.current) {
+        try { node.disconnect(); } catch { /* ignore */ }
+      }
+      sourceFiltersRef.current = null;
     }
   }, []);
 
@@ -100,12 +112,12 @@ export function useLiveTransport({ song, config, events, duration, onError, onSt
 
   const getSampleBuffer = useCallback((ctx, event) => {
     const cfg = configRef.current;
-    const beat = 60 / Math.max(60, cfg.bpm) / 4;
-    const duration = (event.steps || 2) * beat * 0.86;
-    const key = [event.soundId, event.note, duration.toFixed(4), cfg.key, cfg.aggression].join('/');
+    const duration = event.durationSeconds ?? (event.steps || 2) * 60 / Math.max(60, cfg.bpm) / 4 * 0.86;
+    const key = [event.soundId, event.note, duration.toFixed(4), event.pitchFx, event.pitchAmount,
+      event.echo, cfg.key, cfg.aggression].join('/');
     const cache = sampleCacheRef.current;
     if (cache.has(key)) return cache.get(key);
-    const pcm = synthesizeInstrument(event.soundId, cfg, event.note, duration);
+    const pcm = renderHitPCM(event, cfg, synthesizeInstrument);
     const buffer = ctx.createBuffer(1, pcm.length, SYNTH_RATE);
     buffer.copyToChannel(pcm, 0);
     if (cache.size > 96) cache.clear();
@@ -136,7 +148,10 @@ export function useLiveTransport({ song, config, events, duration, onError, onSt
     volume.connect(mixerRef.current);
     node.start(Math.max(ctx.currentTime, startWhen), Math.max(0, offsetSeconds));
     const identifier = event.id;
-    if (store) voicesRef.current.set(identifier, { node, volume, event, startWhen });
+    if (store) {
+      scheduledRef.current.add(identifier);
+      voicesRef.current.set(identifier, { node, volume, event, startWhen });
+    }
     node.onended = () => {
       const previous = voicesRef.current.get(identifier);
       if (previous?.node === node) voicesRef.current.delete(identifier);
@@ -157,9 +172,10 @@ export function useLiveTransport({ song, config, events, duration, onError, onSt
     }
     const end = Math.min(durationRef.current, now + LOOKAHEAD);
     const { contextStart, offset } = clockRef.current;
+    if (sourceSoloRef.current) return;
     for (const event of eventsRef.current) {
       if (event.time < now - 0.01 || event.time >= end) continue;
-      if (voicesRef.current.has(event.id)) continue;
+      if (scheduledRef.current.has(event.id)) continue;
       const startWhen = contextStart + (event.time - offset);
       const late = Math.max(0, ctx.currentTime - startWhen);
       fireVoice(ctx, event, startWhen, late, true);
@@ -176,15 +192,25 @@ export function useLiveTransport({ song, config, events, duration, onError, onSt
     const when = ctx.currentTime + 0.045;
     clockRef.current = { contextStart: when, offset: safe };
     positionRef.current = safe;
-    const ratio = Math.max(60, Math.min(210, configRef.current.bpm || 150)) / Math.max(50, Math.min(240, configRef.current.sourceBpm || 150));
+    const ratio = sourcePlaybackRate(configRef.current);
     const node = ctx.createBufferSource();
     node.buffer = song.buffer;
     node.playbackRate.value = ratio;
     const gain = ctx.createGain();
-    gain.gain.value = configRef.current.keepOriginal ? 0.48 : 0;
-    node.connect(gain);
+    const fx = sourceFxSettings(configRef.current);
+    gain.gain.value = fx.volume;
+    const lowpass = ctx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = fx.cutoff;
+    const highpass = ctx.createBiquadFilter();
+    highpass.type = 'highpass';
+    highpass.frequency.value = fx.highpass;
+    node.connect(lowpass);
+    lowpass.connect(highpass);
+    highpass.connect(gain);
     gain.connect(mixerRef.current);
     musicGainRef.current = gain;
+    sourceFiltersRef.current = [lowpass, highpass];
     node.start(when, Math.min(song.buffer.duration - 0.01, safe * ratio));
     musicRef.current = node;
     playingRef.current = true;
@@ -239,9 +265,13 @@ export function useLiveTransport({ song, config, events, duration, onError, onSt
       const next = valid.get(id);
       if (!next || next.time !== voice.event.time || next.soundId !== voice.event.soundId
           || next.track !== voice.event.track || next.note !== voice.event.note
-          || next.steps !== voice.event.steps || next.volume !== voice.event.volume) {
+          || next.steps !== voice.event.steps || next.volume !== voice.event.volume
+          || next.durationSeconds !== voice.event.durationSeconds
+          || next.pitchFx !== voice.event.pitchFx || next.pitchAmount !== voice.event.pitchAmount
+          || next.echo !== voice.event.echo) {
         try { voice.node.stop(); } catch {}
         voicesRef.current.delete(id);
+        scheduledRef.current.delete(id);
       }
     }
   }, [events]);
@@ -260,6 +290,25 @@ export function useLiveTransport({ song, config, events, duration, onError, onSt
   }, [config.trackGains, config.trackMutes, config.bass, config.aggression, voiceGain]);
 
   useEffect(() => {
+    const fx = sourceFxSettings(config);
+    const ctx = audioRef.current;
+    if (ctx && musicGainRef.current && sourceFiltersRef.current) {
+      musicGainRef.current.gain.setTargetAtTime(fx.volume, ctx.currentTime, 0.015);
+      sourceFiltersRef.current[0].frequency.setTargetAtTime(fx.cutoff, ctx.currentTime, 0.04);
+      sourceFiltersRef.current[1].frequency.setTargetAtTime(fx.highpass, ctx.currentTime, 0.04);
+    }
+  }, [config.sourceTone, config.sourceLowCut, config.sourceLevel, config.keepOriginal]);
+
+  useEffect(() => {
+    if (sourceSolo) {
+      for (const voice of voicesRef.current.values()) {
+        try { voice.node.stop(); } catch {}
+      }
+      voicesRef.current.clear();
+    }
+  }, [sourceSolo]);
+
+  useEffect(() => {
     sampleCacheRef.current.clear();
   }, [config.aggression, config.key, config.bpm]);
 
@@ -267,6 +316,15 @@ export function useLiveTransport({ song, config, events, duration, onError, onSt
   useEffect(() => {
     if (playingRef.current) pause();
   }, [song?.buffer, config.bpm, config.sourceBpm, pause]);
+
+  // AudioContext playback-rate adjustment changes source tempo as well as pitch.
+  // Resync playback rather than requiring a manual stop/start for every pitch change.
+  const lastPitchRef = useRef(config.sourcePitch ?? 0);
+  useEffect(() => {
+    if (lastPitchRef.current === (config.sourcePitch ?? 0)) return;
+    lastPitchRef.current = config.sourcePitch ?? 0;
+    if (playingRef.current) seek(getPosition());
+  }, [config.sourcePitch, seek, getPosition]);
 
   useEffect(() => () => {
     commandRef.current++;
@@ -277,5 +335,21 @@ export function useLiveTransport({ song, config, events, duration, onError, onSt
     if (ctx && ctx.state !== 'closed') ctx.close().catch(() => {});
   }, [stopMusic, clearVoices]);
 
-  return { position, playing, play, pause, seek, getPosition, trigger };
+  const previewSound = useCallback(async (soundId, track, settings = null) => {
+    try {
+      const ctx = await ensureAudio();
+      const cfg = configRef.current;
+      const event = {
+        note: 0, durationSeconds: HIT_DURATIONS[track] || 0.5,
+        pitchFx: 'flat', pitchAmount: 6, echo: 0, volume: 100,
+        ...(settings || {}),
+        id: 'preview-' + Math.random(), soundId, track
+      };
+      fireVoice(ctx, event, ctx.currentTime + 0.005, 0, false);
+    } catch (error) {
+      onErrorRef.current?.(error?.message || 'Could not preview this sound.');
+    }
+  }, [ensureAudio, fireVoice]);
+
+  return { position, playing, play, pause, seek, getPosition, trigger, previewSound };
 }
