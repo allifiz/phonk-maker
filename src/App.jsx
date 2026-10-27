@@ -11,6 +11,8 @@ import { PRESETS, TONICS } from './audio/presets.js';
 import { SOUND_LIBRARY, kitForPreset } from './audio/library.js';
 import { patternFromPreset, normalizePattern, normalizeKit, normalizeTrackValues, DEFAULT_TRACK_GAINS, DEFAULT_TRACK_MUTES } from './audio/patterns.js';
 import ManualSequencer from './ManualSequencer.jsx';
+import LiveTimeline from './LiveTimeline.jsx';
+import { normalizeTimeline } from './audio/timeline.js';
 
 const INITIAL = {
   preset: 'drift', bpm: 150, sourceBpm: 120, key: 'A',
@@ -97,6 +99,11 @@ export default function App() {
     return INITIAL;
   });
   const [song, setSong] = useState(null);
+  const [timelineEvents, setTimelineEvents] = useState(() => {
+    try {
+      return normalizeTimeline(JSON.parse(localStorage.getItem('phonkforge-live-timeline-v1') || '[]'));
+    } catch { return []; }
+  });
   const [output, setOutput] = useState(null);
   const [busy, setBusy] = useState(false);
   const [renderProgress, setRenderProgress] = useState(0);
@@ -112,6 +119,10 @@ export default function App() {
   const audioRef = useRef(null);
   const oneShotRef = useRef(null);
   const preset = PRESETS[config.preset];
+  useEffect(() => {
+    try { localStorage.setItem('phonkforge-live-timeline-v1', JSON.stringify(timelineEvents)); }
+    catch { /* Browser storage is optional. */ }
+  }, [timelineEvents]);
   useEffect(() => {
     try {
       localStorage.setItem('phonkforge-pattern-v1', JSON.stringify({
@@ -174,7 +185,7 @@ export default function App() {
         input = { duration: seconds, sampleRate: 44100, numberOfChannels: 1, getChannelData: () => silence };
         options = { ...config, keepOriginal: false, sourceBpm: config.bpm, beatOffset: 0 };
       }
-      const rendered = await renderRemix(input, options, setRenderProgress, controller.signal);
+      const rendered = await renderRemix(input, { ...options, timelineEvents }, setRenderProgress, controller.signal);
       const url = URL.createObjectURL(rendered.blob);
       setOutput({ ...rendered, url });
       setPosition(0);
@@ -322,19 +333,27 @@ export default function App() {
                 ))}
               </div>
 
-              <div className="section-head"><div><span className="step">03</span><strong>REMIX WORKFLOW</strong></div><span className="muted-label">AUTO OR MANUAL</span></div>
+              <div className="section-head"><div><span className="step">03</span><strong>REMIX WORKFLOW</strong></div><span className="muted-label">AUTO · PATTERN · LIVE TIMELINE</span></div>
               <div className="mode-selector" role="group" aria-label="Remix mode">
                 <button className={config.mode === 'auto' ? 'chosen' : ''} onClick={() => update({ mode: 'auto' })}><WandSparkles size={17}/> AUTO REMIX <small>Genre arrangement, fills and breaks</small></button>
-                <button className={config.mode === 'manual' ? 'chosen' : ''} onClick={() => update({ mode: 'manual' })}><SlidersHorizontal size={17}/> MANUAL REMIX <small>Build every beat yourself</small></button>
+                <button className={config.mode === 'manual' ? 'chosen' : ''} onClick={() => update({ mode: 'manual' })}><SlidersHorizontal size={17}/> PATTERN MAKER <small>Repeat a custom 16-step beat</small></button>
+                <button className={config.mode === 'timeline' ? 'chosen' : ''} onClick={() => update({ mode: 'timeline' })}><AudioWaveform size={17}/> LIVE TIMELINE <small>Play music and place hits at exact seconds</small></button>
               </div>
-              {config.mode === 'manual'
-                ? <ManualSequencer config={config} onChange={update} onAudition={audition} onPreviewLoop={auditionManualLoop} previewing={previewing} onError={setError}/>
-                : <p className="mode-explanation">Auto mode builds an arrangement using your genre preset. Switch to Manual Remix to choose every hit and sound.</p>
+              {config.mode === 'manual' ? (
+                <ManualSequencer config={config} onChange={update} onAudition={audition} onPreviewLoop={auditionManualLoop} previewing={previewing} onError={setError}/>
+              ) : config.mode === 'timeline' ? (
+                <LiveTimeline song={song} config={config} events={timelineEvents} blocked={busy} onError={setError}
+                  onStopOutput={() => { if (audioRef.current) audioRef.current.pause(); }}
+                  onChange={(events, patch) => {
+                    if (events !== timelineEvents) { setTimelineEvents(events); setDirty(true); }
+                    if (patch) update(patch);
+                  }}/>
+              ) : <p className="mode-explanation">Auto mode builds a whole arrangement from a genre preset. Pattern Maker loops a custom 16-step beat. Live Timeline plays your source while you place individual hits at exact seconds.</p>
               }
               <div className="section-head"><div><span className="step">04</span><strong>RENDER YOUR REMIX</strong></div><span className="muted-label">OFFLINE RENDER</span></div>
               <div className="render-card">
                 <div className="render-top"><div className="render-title"><div className="render-icon"><WandSparkles size={23}/></div>
-                  <div><strong>{config.mode === 'manual' ? 'MANUAL PHONK RENDERER' : 'PHONK GENERATOR'}</strong><span>{song || config.mode === 'manual' ? 'Estimated ' + minutes + ' output · ' + config.bpm + ' BPM' : 'Import a track or switch to manual mode'}</span></div></div>
+                  <div><strong>{config.mode === 'timeline' ? 'LIVE TIMELINE EXPORT' : config.mode === 'manual' ? 'PATTERN PHONK RENDERER' : 'PHONK GENERATOR'}</strong><span>{song || config.mode === 'manual' ? 'Estimated ' + minutes + ' output · ' + config.bpm + ' BPM' : 'Import a track or switch to manual mode'}</span></div></div>
                   <span className="engine-badge">WAV · 44.1 KHZ</span>
                 </div>
                 {tooLong && <p className="warning">This output exceeds 15 minutes. Shorten the source or increase target BPM.</p>}
@@ -342,7 +361,7 @@ export default function App() {
                   {busy ? <><Activity size={19} className="spin"/> RENDERING {renderProgress}%...</> : <><Zap size={20} fill="currentColor"/> GENERATE PHONK REMIX <ChevronRight size={19}/></>}
                 </button>
                 {busy && <div className="render-progress" role="status"><div><span>RENDERING WAV · {renderProgress}% COMPLETE</span><button onClick={() => renderController.current?.abort()}>CANCEL RENDER</button></div><progress max="100" value={renderProgress} aria-label="Render progress" /></div>}
-                <p className="render-note">Beat-sequenced kick, tuned 808, snare, hats, cowbell and synthesized FX. Up to 15 minutes per render.</p>
+                <p className="render-note">{config.mode === 'timeline' ? 'Export exactly the hit positions shown in Live Timeline.' : 'Beat-sequenced synthesized kick, 808, snare, hats, cowbell and FX.'} Up to 15 minutes per render.</p>
               </div>
 
               {output && (
@@ -410,10 +429,10 @@ export default function App() {
               ['01', 'IMPORT MUSIC', 'Bring your MP3 or WAV. The decoder reads it locally, and the BPM detector suggests a starting tempo.'],
               ['02', 'PICK A PRESET', 'Choose Drift, Brazilian, Memphis, or Atmospheric. Every preset supplies a different beat, 808 rhythm, and cowbell sequence.'],
               ['03', 'CORRECT THE GRID', 'Set source BPM accurately and adjust the beat start offset so generated hits land with the first downbeat.'],
-              ['04', 'RENDER & EXPORT', 'Use Auto mode or edit your own 16-step beat. Preview four-bar loops, mix the source and export WAV.']
+              ['04', 'RENDER & EXPORT', 'Switch to Live Timeline, play and seek the song while adding samples at exact seconds. Export to WAV when ready.']
             ].map(([num, title, description]) => <div className="help-card" key={num}><span>{num}</span><h3>{title}</h3><p>{description}</p></div>)}
           </div>
-          <div className="limitations"><Sparkles size={21}/><div><strong>KNOWN LIMITATIONS</strong><p>There is no stem separation, accurate key detection, independent time stretching, MP3 export, or full mastering yet. Source audio pitch changes when BPM changes. This MVP intentionally avoids pretending otherwise.</p></div></div>
+          <div className="limitations"><Sparkles size={21}/><div><strong>KNOWN LIMITATIONS</strong><p>Live Timeline synchronizes synthesized hits with the source audio, but there is no stem separation, pitch-preserving time stretching, MP3 export or full mastering yet. Source audio pitch changes when BPM changes. This MVP intentionally avoids pretending otherwise.</p></div></div>
         </div>}
         {error && <div className="toast" role="alert"><CircleHelp size={16}/>{error}<button aria-label="Close error" onClick={() => setError('')}>×</button></div>}
       </main>

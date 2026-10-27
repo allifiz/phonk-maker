@@ -13,7 +13,9 @@
 - Auto arrangements with intro, fills and breaks, **plus Manual Remix with editable 16-step patterns**.
 - Select instrument variants, toggle every sequencer step, edit bass/cowbell pitches and 808 lengths, mute tracks, and mix track levels.
 - Four-bar loop audition, JSON pattern import/export, and local autosave of manual beat settings.
-- Manual mode can generate standalone original beats (8, 16, 32, or 64 bars) without importing a recording.
+- Manual Pattern Maker can generate standalone original beats (8, 16, 32 or 64 bars) without importing a recording.
+- **Live Timeline mode:** simultaneous original-song playback + synthetic sound mixing, seek/scrub to an exact second, zoomable source waveform, drag hits to reposition, per-track sample selection, one-click `+ AT PLAYHEAD` with immediate audition, optional 1/16-step snapping, hit inspector for accurate seconds/pitch/duration/volume, and save/load timeline JSON.
+- Offline WAV export of **exact absolute timeline timestamps** uses the same synthesis engine as live preview.
 - Adjustable aggression, 808 weight, tonic/root note, drum-grid offset and layer switches.
 - Chunked offline PCM rendering with reusable synthesized one-shots, accurate progress/cancel, playable preview, and 16-bit PCM WAV export.
 - No server, API keys, or copyrighted sample packs.
@@ -57,6 +59,19 @@ npm run dist:portable
 ~~~
 
 The installer is **not code signed**. Windows may warn about unknown publishers. Never bypass warnings for a binary from an untrusted source.
+
+## Live Timeline workflow
+
+1. Import your song under **SOURCE AUDIO**, then select **LIVE TIMELINE** in **REMIX WORKFLOW**.
+2. Press **Play** to listen to your original song. Drag the main song seek bar or click the waveform/time ruler to jump anywhere.
+3. Each instrument has six sound choices. Choose a sound from its dropdown.
+4. Press **+ AT PLAYHEAD** while listening to insert a hit immediately and hear it in context. Click empty lane space to add a hit at the clicked second. Drag a hit to move it to another time or track.
+5. Select a hit to edit its precise position in seconds, sound, semitone offset, length, or level.
+6. Turn **SNAP TO 1/16** on for beat-quantized placement; turn it off for free placement. Zoom the timeline to inspect details. Mute a track to compare the mix.
+7. **SAVE PROJECT** downloads your event layout (not the copyrighted source recording) as JSON. **LOAD PROJECT** restores it. Events are also kept in local app storage as a convenience.
+8. **GENERATE PHONK REMIX** produces WAV using the same absolute hit timestamps as realtime playback.
+
+**Timing:** Live Timeline coordinates are seconds *after* target/source BPM playback-rate adjustment. If you change either BPM after placing clips, re-check their positions. There is no pitch-preserving time stretch or automatic detection of where the downbeat starts, so correct the source BPM manually. Live previews run at AudioContext playback speed with a short lookahead scheduler and can exhibit minor jitter under extreme CPU load. Full multitrack DAW operations (split/trim/stretch audio clips, envelope automation, native VST) are not in this release.
 
 ## Workflow
 

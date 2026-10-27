@@ -1,6 +1,7 @@
 import { PRESETS, TONICS, stepTime } from './presets.js';
 import { SOUND_INDEX, resolveSound, kitForPreset } from './library.js';
 import { normalizePattern } from './patterns.js';
+import { normalizeTimeline } from './timeline.js';
 
 // This renderer uses reusable PCM samples and bounded chunks rather than
 // constructing thousands of AudioNodes for a single OfflineAudioContext.
@@ -139,6 +140,20 @@ function synthesize(soundId, config, note = 0, duration = 0.2) {
 
 function createEvents(preset, config, frames, bpm) {
   const events = [];
+  if (config.mode === 'timeline') {
+    const timeline = normalizeTimeline(config.timelineEvents || []);
+    for (const clip of timeline) {
+      if (config.trackMutes?.[clip.track]) continue;
+      const frame = Math.round(clip.time * RATE);
+      if (frame < 0 || frame >= frames) continue;
+      events.push({
+        id: clip.track, soundId: clip.soundId, frame,
+        note: clip.note, duration: clip.steps * (60 / bpm / 4) * 0.86,
+        volume: clip.volume
+      });
+    }
+    return events.sort((a, b) => a.frame - b.frame);
+  }
   const barDuration = 240 / bpm;
   const totalBars = Math.ceil(frames / RATE / barDuration);
   const offset = clamp(Number(config.beatOffset) || 0, 0, 0.75);
@@ -309,7 +324,7 @@ export async function renderRemix(input, config, onProgress = () => {}, signal) 
     const key = [event.soundId, event.note, event.duration.toFixed(4)].join('/');
     if (!cache.has(key)) cache.set(key, synthesize(event.soundId, config, event.note, event.duration));
     event.sample = cache.get(key);
-    event.gain = eventGain(event.id, config);
+    event.gain = eventGain(event.id, config) * ((event.volume ?? 100) / 100);
   }
 
   const parts = [writeWavHeader(totalFrames)];
@@ -345,6 +360,12 @@ export async function renderRemix(input, config, onProgress = () => {}, signal) 
   abortIfRequested(signal);
   const blob = new Blob(parts, { type: 'audio/wav' });
   return { blob, duration: totalFrames / RATE, bpm, hits: events.length, truncated: false };
+}
+
+// The exact same PCM synth is used by the live timeline player and offline renderer.
+export function synthesizeInstrument(soundId, config = {}, note = 0, duration = 0.2) {
+  if (!SOUND_INDEX[soundId]) throw new Error('Unknown sound: ' + soundId);
+  return synthesize(soundId, config, note, duration);
 }
 
 export async function previewInstrument(id, key = 'A') {
