@@ -2,7 +2,7 @@
 
 **Turn any track into a heavy phonk remix.** A desktop-first, offline phonk remix studio with its own synthesized instruments and original beat patterns.
 
-> **Status: working MVP source code, not a released installer.** The renderer mixes source audio with original synthetic drum/bass/cowbell layers. No AI stem splitting, independent time stretching, automatic key detection, or MP3 output yet.
+> **Status: working MVP source code, not a released installer.** The optimized PCM renderer mixes full-length source audio with original synthetic drum/bass/cowbell layers (maximum 15 minutes). No AI stem splitting, independent time stretching, automatic key detection, or MP3 output yet.
 
 ## Features
 
@@ -12,8 +12,9 @@
 - Seven built-in, original synthesized sounds: 808, kick, snare, closed hat, open hat, cowbell, impact.
 - Sequenced beat arrangement with intro, fills, drop impact and breaks.
 - Adjustable aggression, 808 weight, tonic/root note, drum-grid offset and layer switches.
-- True offline Web Audio rendering, compressed output bus, playable preview, and 16-bit PCM WAV export.
+- Chunked offline PCM rendering with reusable synthesized one-shots, accurate progress/cancel, playable preview, and 16-bit PCM WAV export.
 - No server, API keys, or copyrighted sample packs.
+- Long renders show real PCM progress and support cancellation. Maximum output length is 15 minutes (no silent trim).
 
 ## Requirements
 

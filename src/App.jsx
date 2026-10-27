@@ -81,6 +81,8 @@ export default function App() {
   const [song, setSong] = useState(null);
   const [output, setOutput] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [renderProgress, setRenderProgress] = useState(0);
+  const renderController = useRef(null);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
   const [dirty, setDirty] = useState(false);
@@ -131,18 +133,22 @@ export default function App() {
   async function generate() {
     if (!song || busy) return;
     setBusy(true);
+    setRenderProgress(0);
+    const controller = new AbortController();
+    renderController.current = controller;
     setError('');
     setPlaying(false);
     if (audioRef.current) audioRef.current.pause();
     try {
-      const rendered = await renderRemix(song.buffer, config);
+      const rendered = await renderRemix(song.buffer, config, setRenderProgress, controller.signal);
       const url = URL.createObjectURL(rendered.blob);
       setOutput({ ...rendered, url });
       setPosition(0);
       setDirty(false);
     } catch (err) {
-      setError(err?.message || 'Rendering failed. Try a shorter audio file.');
+      if (err?.name !== 'AbortError') setError(err?.message || 'Rendering failed. Try a shorter audio file.');
     } finally {
+      renderController.current = null;
       setBusy(false);
     }
   }
@@ -198,6 +204,7 @@ export default function App() {
 
   const rate = config.bpm / config.sourceBpm;
   const minutes = song ? timeLabel(song.duration / rate) : '--:--';
+  const tooLong = song && song.duration / rate > 15 * 60;
 
   return (
     <div className="app-shell">
@@ -271,10 +278,12 @@ export default function App() {
                   <div><strong>PHONK GENERATOR</strong><span>{song ? 'Estimated ' + minutes + ' output · ' + config.bpm + ' BPM' : 'Import a track to unlock rendering'}</span></div></div>
                   <span className="engine-badge">WAV · 44.1 KHZ</span>
                 </div>
-                <button className="generate-btn" disabled={!song || busy || importing} onClick={generate}>
-                  {busy ? <><Activity size={19} className="spin"/> RENDERING AUDIO...</> : <><Zap size={20} fill="currentColor"/> GENERATE PHONK REMIX <ChevronRight size={19}/></>}
+                {tooLong && <p className="warning">This output exceeds 15 minutes. Shorten the source or increase target BPM.</p>}
+                <button className="generate-btn" disabled={!song || busy || importing || tooLong} onClick={generate}>
+                  {busy ? <><Activity size={19} className="spin"/> RENDERING {renderProgress}%...</> : <><Zap size={20} fill="currentColor"/> GENERATE PHONK REMIX <ChevronRight size={19}/></>}
                 </button>
-                <p className="render-note">Beat-sequenced kick, tuned 808, snare, hats, cowbell and synthesized FX. Up to 4 minutes per render.</p>
+                {busy && <div className="render-progress" role="status"><div><span>RENDERING WAV · {renderProgress}% COMPLETE</span><button onClick={() => renderController.current?.abort()}>CANCEL RENDER</button></div><progress max="100" value={renderProgress} aria-label="Render progress" /></div>}
+                <p className="render-note">Beat-sequenced kick, tuned 808, snare, hats, cowbell and synthesized FX. Up to 15 minutes per render.</p>
               </div>
 
               {output && (
